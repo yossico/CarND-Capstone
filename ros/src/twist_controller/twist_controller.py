@@ -1,63 +1,50 @@
-import time
 from pid import PID
-from lowpass import LowPassFilter
 from yaw_controller import YawController
-import rospy
-
+import math
 GAS_DENSITY = 2.858
 ONE_MPH = 0.44704
 
-MIN_SPEED = 0 # No reverse driving
-MAX_SPEED = 100 # Sane speed limit
 
 class Controller(object):
-    def __init__(self, vehicle_mass, fuel_capacity, brake_deadband, decel_limit, accel_limit, 
-                        wheel_radius, wheel_base, steer_ratio, max_lat_accel, max_steer_angle,
-                        velocity_kp, velocity_ki, velocity_kd,
-                        steering_kp, steering_ki, steering_kd):
-        
-        # Store parameters
-        self.total_mass = vehicle_mass + fuel_capacity * GAS_DENSITY
-        self.brake_deadband = brake_deadband
-        self.wheel_radius = wheel_radius
+    def __init__(self, *args, **kwargs):
 
-        # Init controllers
-        self.velocity_pid = PID(velocity_kp, velocity_ki, velocity_kd, decel_limit, accel_limit)
-        self.yaw_control = YawController(wheel_base, steer_ratio, MIN_SPEED, max_lat_accel, max_steer_angle)
-        self.steering_pid = PID(steering_kp, steering_ki, steering_kd, -max_steer_angle, max_steer_angle)
+        self.vehicle_mass = kwargs['vehicle_mass']
+        self.fuel_capacity = kwargs['fuel_capacity']
+        self.brake_deadband = kwargs['brake_deadband']
+        self.decel_limit = kwargs['decel_limit']
+        self.accel_limit = kwargs['accel_limit']
+        self.wheel_radius = kwargs['wheel_radius']
+        self.wheel_base = kwargs['wheel_base']
+        self.steer_ratio = kwargs['steer_ratio']
+        self.max_lat_accel = kwargs['max_lat_accel']
+        self.max_steer_angle = kwargs['max_steer_angle']
+        min_speed = 0 # TODO: What is a good value for min speed?
 
-    def control(self,   cmd_linear_velocity,
-                        cmd_angular_velocity,
-                        current_linear_velocity,
-                        dbw_enabled,
-                        dt):
 
-        cmd_throttle = 0.
-        cmd_brake = 0.
-        cmd_steering = 0.
-        
-        if not dbw_enabled:
-            self.velocity_pid.reset()
-            self.steering_pid.reset()
-        else:
-            # Step speed controller
-            speed_error = cmd_linear_velocity.x - current_linear_velocity.x
-            cmd_acceleration = self.velocity_pid.step(speed_error, dt)
+        #self.linear_pid = PID(kp=0.2, ki=0.005, kd=0.1, mn=decel_limit, mx=0.5 * accel_limit)
+        self.linear_pid = PID(kp=0.8, ki=0, kd=0.05, mn=self.decel_limit, mx=0.5 * self.accel_limit)
+        self.yaw_controller = YawController(self.wheel_base, self.steer_ratio, min_speed, self.max_lat_accel, self.max_steer_angle)
+        self.steering_pid = PID(kp=0.15, ki=0.001, kd=0.1, mn=-self.max_steer_angle, mx=self.max_steer_angle)
 
-            if (cmd_acceleration > 0):
-                # Set throttle
-                cmd_throttle = cmd_acceleration
-            else:
-                # Step brake
-                tmp_force = -cmd_acceleration * self.total_mass
-                tmp_brake = tmp_force * self.wheel_radius
-                
-                if (abs(tmp_brake) > self.brake_deadband):
-                    cmd_brake = tmp_brake
+    def reset(self):
+        self.linear_pid.reset()
+        self.steering_pid.reset()
 
-            # Step steering controller
-            tmp_steering = self.yaw_control.get_steering(cmd_linear_velocity.x, cmd_angular_velocity.z, current_linear_velocity.x)
-            cmd_steering = self.steering_pid.step(tmp_steering, dt)
+    def control(self, proposed_linear_velocity, proposed_angular_velocity, current_linear_velocity, cross_track_error, duration_in_seconds):
+        linear_velocity_error = proposed_linear_velocity - current_linear_velocity
 
-        # Return throttle, brake, steer
-        return cmd_throttle, cmd_brake, cmd_steering
+        velocity_correction = self.linear_pid.step(linear_velocity_error, duration_in_seconds)
+
+        brake = 0
+        throttle = velocity_correction
+
+        if(throttle < 0):
+            deceleration = abs(throttle)
+            brake = (self.vehicle_mass + self.fuel_capacity * GAS_DENSITY) * self.wheel_radius * deceleration if deceleration > self.brake_deadband else 0.
+            throttle = 0
+
+        predictive_steering = self.yaw_controller.get_steering(proposed_linear_velocity, proposed_angular_velocity, current_linear_velocity)
+        corrective_steering = self.steering_pid.step(cross_track_error, duration_in_seconds)
+        steering = predictive_steering + corrective_steering
+
+        return throttle, brake, steering
