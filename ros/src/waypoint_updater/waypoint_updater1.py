@@ -4,7 +4,8 @@ import rospy
 from std_msgs.msg import Int32
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from styx_msgs.msg import Lane, Waypoint
-import tf
+#import tf
+
 import math
 
 '''
@@ -30,7 +31,7 @@ class WaypointUpdater(object):
     def __init__(self):
         rospy.init_node('waypoint_updater')
 
-        self.base_waypoints_sub = rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb)
+        rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb)
         rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb)
         rospy.Subscriber('/current_velocity', TwistStamped, self.velocity_cb)
         rospy.Subscriber('/traffic_waypoint', Int32, self.traffic_cb)
@@ -42,31 +43,21 @@ class WaypointUpdater(object):
 
         self.current_pose = None
         self.base_waypoints = None
-        #self.base_waypoint_search = None
-        self.velocity = None
-        self.stop_wp = None
-        self.car_yaw = None
+        self.base_waypoint_search = None
+        self.velocity = 0.
+        self.stop_wp = -1
 
         rospy.spin()
 
     def pose_cb(self, msg):
         self.current_pose = msg.pose
         self.frame_id = msg.header.frame_id
-        orientation = self.current_pose.orientation
-        quaternion = (orientation.x, orientation.y, orientation.z, orientation.w)
-        euler = tf.transformations.euler_from_quaternion(quaternion)
-        self.car_yaw = euler[2]
         self.update()
 
     def waypoints_cb(self, msg):
         rospy.loginfo("WaypointUpdater: Got Base Waypoints")
         self.base_waypoints = msg.waypoints
-        #for waypoint in msg.waypoints:
-        #        self.base_waypoints.append(waypoint)
-        #self.base_waypoint_search = msg.waypoints + msg.waypoints
-        self.base_waypoints_sub.unregister()        
-        #self.base_waypoints = msg.waypoints
-        
+        self.base_waypoint_search = msg.waypoints + msg.waypoints
 
     def velocity_cb(self, msg):
         self.velocity = msg.twist.linear.x
@@ -92,6 +83,38 @@ class WaypointUpdater(object):
                        waypoints[i].pose.pose.position)
             wp1 = i
         return dist
+""""
+    def get_yaw(self):
+    """ #Get the car yaw angle
+    """
+	quaternion = (
+		self.current_pose.orientation.x,
+		self.current_pose.orientation.y,
+		self.current_pose.orientation.z,
+		self.current_pose.orientation.w)
+	yaw = (tf.transformations.euler_from_quaternion(quaternion))[2]
+        return yaw
+""""
+""""
+    def is_behind(self, nearest_idx):
+        """  #Check if nearest_idx is behind the car
+        """
+        # Coordinates of the waypoint to be checked
+	nearest_wp_x = self.base_waypoints[wp_idx].pose.pose.position.x
+	nearest_wp_y = self.base_waypoints[wp_idx].pose.pose.position.y
+	# Current position of the car
+	x = self.current_pose.position.x
+	y = self.current_pose.position.y
+	# Yaw angle 
+	yaw = self.get_yaw()
+	# Determine if nearest waypoint is in front or behind the car 
+	loc_x = (nearest_wp_x - x) * math.cos(yaw) + (nearest_wp_y - y) * math.sin(yaw)
+	# If above expression is less than zero, waypoint is behind the rar - return Frue
+	if loc_x < 0.0:
+	    return True
+        # Otherwise, return False
+        return False
+""""
 
     def update(self):
         """ Updates the waypoints and publishes them to /final_waypoints
@@ -106,10 +129,9 @@ class WaypointUpdater(object):
 
         base_waypoint_idx = self.nearest_waypoint()
 
-        #next_waypoints = self.base_waypoint_search[
-        #                 base_waypoint_idx:base_waypoint_idx + LOOKAHEAD_WPS]
-        next_waypoints = self.base_waypoints[
+        next_waypoints = self.base_waypoint_search[
                          base_waypoint_idx:base_waypoint_idx + LOOKAHEAD_WPS]
+
         stop_is_close = self.is_stop_close(base_waypoint_idx)
         if stop_is_close:
             for i, waypoint in enumerate(next_waypoints):
@@ -125,8 +147,6 @@ class WaypointUpdater(object):
     def is_stop_close(self, base_waypoint_idx):
         """ Checks whether it is time to start slowing down
         """
-        if self.stop_wp == None:
-            return False
         stop_is_close = False
         if self.stop_wp - base_waypoint_idx > 0:  # stop is ahead
             d_stop = self.distance(
@@ -136,18 +156,10 @@ class WaypointUpdater(object):
         return stop_is_close
 
 
-
-    def is_behind(self, nearest_idx, yaw):
+    def is_behind(self, nearest_idx):
         """  Check if nearest_idx is behind the car
         """
         # TODO: Implement
-	nearest_wp_x = self.base_waypoints[nearest_idx].pose.pose.position.x
-	nearest_wp_y = self.base_waypoints[nearest_idx].pose.pose.position.y
-	x = self.current_pose.position.x
-	y = self.current_pose.position.y
-	loc_x = (nearest_wp_x - x) * math.cos(yaw) + (nearest_wp_y - y) * math.sin(yaw)
-        if loc_x < 0.0:
-	    return True
         return False
 
     def nearest_waypoint(self):
@@ -162,7 +174,7 @@ class WaypointUpdater(object):
             if d < nearest_d:
                 nearest_idx, nearest_d = i, d
 
-        if self.is_behind(nearest_idx, self.car_yaw):
+        if self.is_behind(nearest_idx):
             nearest_idx += 1
 
         return nearest_idx
